@@ -80,6 +80,8 @@ def generate_data(n_samples=5000, random_state=42):
         "churn": churn
     })
 
+    data = data.astype('float32')
+
     return data
 
 

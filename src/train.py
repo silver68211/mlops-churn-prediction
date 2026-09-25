@@ -17,6 +17,17 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
+import mlflow
+import mlflow.sklearn
+
+from mlflow.models import infer_signature
+
+
+
+MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+EXPERIMENT_NAME = "customer-churn"
+
+
 ROOT = Path(__file__).resolve().parents[1]
 
 DATA_PATH = ROOT / "data" / "raw" / "churn.csv"
@@ -36,6 +47,13 @@ FEATURES = [
 ]
 
 TARGET = "churn"
+
+
+MODEL_PARAMS = {
+    "C": 1.0,
+    "max_iter": 1000,
+    "random_state": 42
+}
 
 
 def load_data():
@@ -60,8 +78,7 @@ def build_pipeline():
         (
             "model",
             LogisticRegression(
-                max_iter=1000,
-                random_state=42
+                **MODEL_PARAMS
             )
         )
     ])
@@ -107,6 +124,10 @@ def evaluate_model(model, X_test, y_test):
 
 def main():
 
+    # Set MLflow tracking URI and experiment name
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(EXPERIMENT_NAME)
+
     # Load data
     X, y = load_data()
 
@@ -121,24 +142,46 @@ def main():
 
     # Create model pipeline
     pipeline = build_pipeline()
+    with mlflow.start_run(run_name = "logistic_regression_baseline"):
+        # Train model
+        pipeline.fit(
+            X_train,
+            y_train
+        )
 
-    # Train model
-    pipeline.fit(
-        X_train,
-        y_train
-    )
+        # Evaluate model
+        metrics = evaluate_model(
+            pipeline,
+            X_test,
+            y_test
+        )
 
-    # Evaluate model
-    metrics = evaluate_model(
-        pipeline,
-        X_test,
-        y_test
-    )
+        print("\nModel performance")
 
-    print("\nModel performance")
+        for name, value in metrics.items():
+            print(f"{name}: {value:.4f}")
 
-    for name, value in metrics.items():
-        print(f"{name}: {value:.4f}")
+        # Log model parameters to MLflow
+        mlflow.log_params(MODEL_PARAMS)
+
+        # Log model and metrics to MLflow
+        mlflow.sklearn.log_model(
+            pipeline,
+            name ="churn_model",
+            input_example=X_train.head(5)
+        )
+        
+        mlflow.log_metrics(metrics)
+
+        # Log model signature
+        signature = infer_signature(X_train, pipeline.predict(X_train))
+        mlflow.sklearn.log_model(
+            pipeline,
+            name ="churn_model",
+            input_example=X_train.head(5),
+            signature=signature
+        )
+    
 
     # Create model directory if necessary
     MODEL_PATH.parent.mkdir(

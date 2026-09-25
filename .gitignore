@@ -17,3 +17,9 @@ models/*.joblib
 
 # OS
 .DS_Store
+
+
+# MLflow
+mlflow.db
+mlartifacts/
+mlruns/
