@@ -1,0 +1,19 @@
+{
+    "model_type": "LogisticRegression",
+    "features": [
+        "tenure_months",
+        "monthly_spend",
+        "support_calls",
+        "usage_hours",
+        "contract_months",
+        "late_payments"
+    ],
+    "target": "churn",
+    "metrics": {
+        "accuracy": 0.814,
+        "precision": 0.6404494382022472,
+        "recall": 0.27014218009478674,
+        "f1_score": 0.38,
+        "roc_auc": 0.7797319782074617
+    }
+}
