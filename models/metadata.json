@@ -9,6 +9,11 @@
         "late_payments"
     ],
     "target": "churn",
+    "parameters": {
+        "C": 1.0,
+        "max_iter": 1000,
+        "random_state": 42
+    },
     "metrics": {
         "accuracy": 0.814,
         "precision": 0.6404494382022472,

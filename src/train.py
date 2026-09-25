@@ -1,5 +1,5 @@
 from pathlib import Path
-import json
+import time
 
 import joblib
 import mlflow
@@ -8,6 +8,10 @@ import pandas as pd
 
 from mlflow.models import infer_signature
 
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    GradientBoostingClassifier
+)
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -21,19 +25,31 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
+# -------------------------------------------------
+# Paths
+# -------------------------------------------------
+
 ROOT = Path(__file__).resolve().parents[1]
 
 DATA_PATH = ROOT / "data" / "raw" / "churn.csv"
 
-MODEL_PATH = ROOT / "models" / "churn_pipeline.joblib"
+MODEL_DIR = ROOT / "models"
 
-METADATA_PATH = ROOT / "models" / "metadata.json"
+COMPARISON_PATH = MODEL_DIR / "model_comparison.csv"
 
+
+# -------------------------------------------------
+# MLflow configuration
+# -------------------------------------------------
 
 MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 
 EXPERIMENT_NAME = "customer-churn"
 
+
+# -------------------------------------------------
+# Dataset configuration
+# -------------------------------------------------
 
 FEATURES = [
     "tenure_months",
@@ -47,15 +63,56 @@ FEATURES = [
 TARGET = "churn"
 
 
-MODEL_PARAMS = {
-    "C": 1.0,
-    "max_iter": 1000,
-    "random_state": 42
+# -------------------------------------------------
+# Models
+# -------------------------------------------------
+
+MODELS = {
+    "logistic_regression": {
+        "model": LogisticRegression(
+            C=1.0,
+            max_iter=1000,
+            random_state=42
+        ),
+        "use_scaler": True,
+        "skops_trusted_types": None
+    },
+
+    "random_forest": {
+        "model": RandomForestClassifier(
+            n_estimators=200,
+            max_depth=8,
+            min_samples_leaf=2,
+            random_state=42,
+            n_jobs=-1
+        ),
+        "use_scaler": False,
+        "skops_trusted_types": [
+            "sklearn.tree._tree.Tree"
+        ]
+    },
+
+    "gradient_boosting": {
+        "model": GradientBoostingClassifier(
+            n_estimators=100,
+            learning_rate=0.05,
+            max_depth=3,
+            random_state=42
+        ),
+        "use_scaler": False,
+        "skops_trusted_types": [
+            "sklearn.tree._tree.Tree"
+        ]
+    }
 }
 
 
+# -------------------------------------------------
+# Data
+# -------------------------------------------------
+
 def load_data():
-    """Load training data."""
+    """Load the churn dataset."""
 
     data = pd.read_csv(DATA_PATH)
 
@@ -65,27 +122,33 @@ def load_data():
     return X, y
 
 
-def build_pipeline():
-    """Create preprocessing and model pipeline."""
+# -------------------------------------------------
+# Pipeline
+# -------------------------------------------------
 
-    pipeline = Pipeline([
-        (
-            "scaler",
-            StandardScaler()
-        ),
-        (
-            "model",
-            LogisticRegression(
-                **MODEL_PARAMS
-            )
+def build_pipeline(model, use_scaler):
+    """Build the preprocessing and model pipeline."""
+
+    steps = []
+
+    if use_scaler:
+        steps.append(
+            ("scaler", StandardScaler())
         )
-    ])
 
-    return pipeline
+    steps.append(
+        ("model", model)
+    )
 
+    return Pipeline(steps)
+
+
+# -------------------------------------------------
+# Evaluation
+# -------------------------------------------------
 
 def evaluate_model(model, X_test, y_test):
-    """Evaluate the model."""
+    """Calculate classification metrics."""
 
     predictions = model.predict(X_test)
 
@@ -126,6 +189,175 @@ def evaluate_model(model, X_test, y_test):
     return metrics
 
 
+# -------------------------------------------------
+# Train one model
+# -------------------------------------------------
+
+def train_model(
+    model_name,
+    model_config,
+    X_train,
+    X_test,
+    y_train,
+    y_test
+):
+    """Train, evaluate and log one model."""
+
+    model = model_config["model"]
+
+    use_scaler = model_config["use_scaler"]
+    skops_trusted_types = model_config.get(
+        "skops_trusted_types"
+        )
+
+    pipeline = build_pipeline(
+        model,
+        use_scaler
+    )
+
+    print(f"\nTraining: {model_name}")
+
+    # Measure training time
+    start_time = time.perf_counter()
+
+    pipeline.fit(
+        X_train,
+        y_train
+    )
+
+    training_time = (
+        time.perf_counter() - start_time
+    )
+
+    # Evaluate
+    metrics = evaluate_model(
+        pipeline,
+        X_test,
+        y_test
+    )
+
+    metrics["training_time_seconds"] = (
+        training_time
+    )
+
+    # ---------------------------------------------
+    # MLflow run
+    # ---------------------------------------------
+
+    with mlflow.start_run(
+        run_name=model_name
+    ) as run:
+
+        # General parameters
+        mlflow.log_param(
+            "model_type",
+            model.__class__.__name__
+        )
+
+        mlflow.log_param(
+            "use_scaler",
+            use_scaler
+        )
+
+        # Model-specific parameters
+        mlflow.log_params(
+            model.get_params()
+        )
+
+        # Metrics
+        mlflow.log_metrics(
+            metrics
+        )
+
+        # Tags make runs easier to organize
+        mlflow.set_tag(
+            "experiment_stage",
+            "model_comparison"
+        )
+
+        # Use float input for a serving-friendly schema.
+        # This also avoids the integer/missing-value
+        # warning we saw previously.
+        signature_input = (
+            X_train
+            .head(100)
+            .astype("float64")
+        )
+
+        signature = infer_signature(
+            signature_input,
+            pipeline.predict(
+                signature_input
+            )
+        )
+
+        # Save complete sklearn pipeline in MLflow
+        mlflow.sklearn.log_model(
+            sk_model=pipeline,
+            name="model",
+            signature=signature,
+            input_example=signature_input.head(3), 
+            skops_trusted_types=skops_trusted_types
+        )
+
+        run_id = run.info.run_id
+
+    # ---------------------------------------------
+    # Save local copy
+    # ---------------------------------------------
+
+    MODEL_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    model_path = (
+        MODEL_DIR /
+        f"{model_name}.joblib"
+    )
+
+    joblib.dump(
+        pipeline,
+        model_path
+    )
+
+    # Print results
+    print(
+        f"Accuracy:  {metrics['accuracy']:.4f}"
+    )
+
+    print(
+        f"Precision: {metrics['precision']:.4f}"
+    )
+
+    print(
+        f"Recall:    {metrics['recall']:.4f}"
+    )
+
+    print(
+        f"F1 score:  {metrics['f1_score']:.4f}"
+    )
+
+    print(
+        f"ROC-AUC:   {metrics['roc_auc']:.4f}"
+    )
+
+    print(
+        f"Training time: "
+        f"{training_time:.4f} seconds"
+    )
+
+    return {
+        "model": model_name,
+        **metrics,
+        "run_id": run_id
+    }
+
+
+# -------------------------------------------------
+# Main
+# -------------------------------------------------
+
 def main():
 
     # Connect to MLflow
@@ -140,105 +372,88 @@ def main():
     # Load data
     X, y = load_data()
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y
+    # IMPORTANT:
+    # All models use exactly the same split.
+    X_train, X_test, y_train, y_test = (
+        train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y
+        )
     )
-
-    pipeline = build_pipeline()
-
-    # Start one MLflow experiment run
-    with mlflow.start_run(
-        run_name="logistic_regression_baseline"
-    ) as run:
-
-        # Train
-        pipeline.fit(
-            X_train,
-            y_train
-        )
-
-        # Evaluate
-        metrics = evaluate_model(
-            pipeline,
-            X_test,
-            y_test
-        )
-
-        # Log model parameters
-        mlflow.log_params(
-            MODEL_PARAMS
-        )
-
-        # Log evaluation metrics
-        mlflow.log_metrics(
-            metrics
-        )
-
-        # Create model signature
-        signature = infer_signature(
-            X_train,
-            pipeline.predict(X_train)
-        )
-
-        # Log complete sklearn pipeline
-        model_info = mlflow.sklearn.log_model(
-            pipeline,
-            name="churn_model",
-            signature=signature,
-            input_example=X_train.head(3)
-        )
-
-        print("\nModel performance:")
-
-        for name, value in metrics.items():
-            print(
-                f"{name}: {value:.4f}"
-            )
-
-        print(
-            f"\nMLflow run ID: {run.info.run_id}"
-        )
-
-        print(
-            f"MLflow model URI: {model_info.model_uri}"
-        )
-
-    # Keep our local artifact for now
-    MODEL_PATH.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    joblib.dump(
-        pipeline,
-        MODEL_PATH
-    )
-
-    metadata = {
-        "model_type": "LogisticRegression",
-        "features": FEATURES,
-        "target": TARGET,
-        "parameters": MODEL_PARAMS,
-        "metrics": metrics
-    }
-
-    with open(
-        METADATA_PATH,
-        "w"
-    ) as file:
-
-        json.dump(
-            metadata,
-            file,
-            indent=4
-        )
 
     print(
-        f"\nLocal model saved to: {MODEL_PATH}"
+        f"Training samples: {len(X_train)}"
+    )
+
+    print(
+        f"Test samples:     {len(X_test)}"
+    )
+
+    # Store model results
+    results = []
+
+    # Train every candidate model
+    for model_name, model_config in MODELS.items():
+
+        result = train_model(
+            model_name=model_name,
+            model_config=model_config,
+            X_train=X_train,
+            X_test=X_test,
+            y_train=y_train,
+            y_test=y_test
+        )
+
+        results.append(
+            result
+        )
+
+    # ---------------------------------------------
+    # Compare models
+    # ---------------------------------------------
+
+    comparison = pd.DataFrame(
+        results
+    )
+
+    comparison = comparison.sort_values(
+        by="roc_auc",
+        ascending=False
+    )
+
+    print("\n")
+    print("=" * 70)
+    print("MODEL COMPARISON")
+    print("=" * 70)
+
+    print(
+        comparison[
+            [
+                "model",
+                "accuracy",
+                "precision",
+                "recall",
+                "f1_score",
+                "roc_auc",
+                "training_time_seconds"
+            ]
+        ].to_string(
+            index=False
+        )
+    )
+
+    # Save comparison table
+    comparison.to_csv(
+        COMPARISON_PATH,
+        index=False
+    )
+
+    print(
+        f"\nComparison saved to:"
+        f"\n{COMPARISON_PATH}"
     )
 
 
