@@ -2,7 +2,11 @@ from pathlib import Path
 import json
 
 import joblib
+import mlflow
+import mlflow.sklearn
 import pandas as pd
+
+from mlflow.models import infer_signature
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -17,17 +21,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
-import mlflow
-import mlflow.sklearn
-
-from mlflow.models import infer_signature
-
-
-
-MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
-EXPERIMENT_NAME = "customer-churn"
-
-
 ROOT = Path(__file__).resolve().parents[1]
 
 DATA_PATH = ROOT / "data" / "raw" / "churn.csv"
@@ -35,6 +28,11 @@ DATA_PATH = ROOT / "data" / "raw" / "churn.csv"
 MODEL_PATH = ROOT / "models" / "churn_pipeline.joblib"
 
 METADATA_PATH = ROOT / "models" / "metadata.json"
+
+
+MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+
+EXPERIMENT_NAME = "customer-churn"
 
 
 FEATURES = [
@@ -57,7 +55,7 @@ MODEL_PARAMS = {
 
 
 def load_data():
-    """Load the training dataset."""
+    """Load training data."""
 
     data = pd.read_csv(DATA_PATH)
 
@@ -87,32 +85,38 @@ def build_pipeline():
 
 
 def evaluate_model(model, X_test, y_test):
-    """Evaluate the trained model."""
+    """Evaluate the model."""
 
     predictions = model.predict(X_test)
 
-    probabilities = model.predict_proba(X_test)[:, 1]
+    probabilities = model.predict_proba(
+        X_test
+    )[:, 1]
 
     metrics = {
         "accuracy": accuracy_score(
             y_test,
             predictions
         ),
+
         "precision": precision_score(
             y_test,
             predictions,
             zero_division=0
         ),
+
         "recall": recall_score(
             y_test,
             predictions,
             zero_division=0
         ),
+
         "f1_score": f1_score(
             y_test,
             predictions,
             zero_division=0
         ),
+
         "roc_auc": roc_auc_score(
             y_test,
             probabilities
@@ -124,14 +128,18 @@ def evaluate_model(model, X_test, y_test):
 
 def main():
 
-    # Set MLflow tracking URI and experiment name
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(EXPERIMENT_NAME)
+    # Connect to MLflow
+    mlflow.set_tracking_uri(
+        MLFLOW_TRACKING_URI
+    )
+
+    mlflow.set_experiment(
+        EXPERIMENT_NAME
+    )
 
     # Load data
     X, y = load_data()
 
-    # Create train/test datasets
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -140,66 +148,81 @@ def main():
         stratify=y
     )
 
-    # Create model pipeline
     pipeline = build_pipeline()
-    with mlflow.start_run(run_name = "logistic_regression_baseline"):
-        # Train model
+
+    # Start one MLflow experiment run
+    with mlflow.start_run(
+        run_name="logistic_regression_baseline"
+    ) as run:
+
+        # Train
         pipeline.fit(
             X_train,
             y_train
         )
 
-        # Evaluate model
+        # Evaluate
         metrics = evaluate_model(
             pipeline,
             X_test,
             y_test
         )
 
-        print("\nModel performance")
+        # Log model parameters
+        mlflow.log_params(
+            MODEL_PARAMS
+        )
+
+        # Log evaluation metrics
+        mlflow.log_metrics(
+            metrics
+        )
+
+        # Create model signature
+        signature = infer_signature(
+            X_train,
+            pipeline.predict(X_train)
+        )
+
+        # Log complete sklearn pipeline
+        model_info = mlflow.sklearn.log_model(
+            pipeline,
+            name="churn_model",
+            signature=signature,
+            input_example=X_train.head(3)
+        )
+
+        print("\nModel performance:")
 
         for name, value in metrics.items():
-            print(f"{name}: {value:.4f}")
+            print(
+                f"{name}: {value:.4f}"
+            )
 
-        # Log model parameters to MLflow
-        mlflow.log_params(MODEL_PARAMS)
-
-        # Log model and metrics to MLflow
-        mlflow.sklearn.log_model(
-            pipeline,
-            name ="churn_model",
-            input_example=X_train.head(5)
+        print(
+            f"\nMLflow run ID: {run.info.run_id}"
         )
-        
-        mlflow.log_metrics(metrics)
 
-        # Log model signature
-        signature = infer_signature(X_train, pipeline.predict(X_train))
-        mlflow.sklearn.log_model(
-            pipeline,
-            name ="churn_model",
-            input_example=X_train.head(5),
-            signature=signature
+        print(
+            f"MLflow model URI: {model_info.model_uri}"
         )
-    
 
-    # Create model directory if necessary
+    # Keep our local artifact for now
     MODEL_PATH.parent.mkdir(
         parents=True,
         exist_ok=True
     )
 
-    # Save complete pipeline
     joblib.dump(
         pipeline,
         MODEL_PATH
     )
 
-    # Save useful information about model
     metadata = {
         "model_type": "LogisticRegression",
         "features": FEATURES,
         "target": TARGET,
+        "parameters": MODEL_PARAMS,
         "metrics": metrics
     }
 
@@ -207,6 +230,7 @@ def main():
         METADATA_PATH,
         "w"
     ) as file:
+
         json.dump(
             metadata,
             file,
@@ -214,11 +238,7 @@ def main():
         )
 
     print(
-        f"\nModel saved to: {MODEL_PATH}"
-    )
-
-    print(
-        f"Metadata saved to: {METADATA_PATH}"
+        f"\nLocal model saved to: {MODEL_PATH}"
     )
 
 
