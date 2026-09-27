@@ -1,0 +1,1 @@
+{"timestamp": "2026-09-27T10:51:17.267704+00:00", "input": {"tenure_months": 8.0, "monthly_spend": 110.0, "support_calls": 5.0, "usage_hours": 30.0, "contract_months": 1.0, "late_payments": 3.0}, "churn_probability": 0.8878954074271661, "prediction": 1, "threshold": 0.5}
