@@ -1,4 +1,4 @@
-name: CI
+name: CI-CD
 
 on:
   push:
@@ -10,10 +10,25 @@ on:
       - main
 
 
+permissions:
+  contents: read
+  packages: write
+
+
+env:
+  IMAGE_NAME: ghcr.io/silver68211/mlops-churn-api
+
+
 jobs:
 
+  # ------------------------------------------------
+  # CI: tests
+  # ------------------------------------------------
+
   test:
+
     name: Run tests
+
     runs-on: ubuntu-latest
 
     steps:
@@ -37,19 +52,109 @@ jobs:
           pytest -v -m "not integration"
 
 
-  docker:
-    name: Build Docker image
+  # ------------------------------------------------
+  # CD stage 1: build and publish image
+  # ------------------------------------------------
+
+  build-push:
+
+    name: Build and push Docker image
+
     runs-on: ubuntu-latest
 
-    needs: test
+    needs:
+      - test
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+          | docker login ghcr.io \
+              -u "${{ github.actor }}" \
+              --password-stdin
+
       - name: Build Docker image
         run: |
           docker build \
-            -t mlops-churn-api:${{ github.sha }} \
+            -t $IMAGE_NAME:${{ github.sha }} \
+            -t $IMAGE_NAME:latest \
             .
+
+      - name: Push Docker image
+        run: |
+          docker push $IMAGE_NAME:${{ github.sha }}
+          docker push $IMAGE_NAME:latest
+
+
+  # ------------------------------------------------
+  # CD stage 2: deploy
+  # ------------------------------------------------
+
+  deploy:
+
+    name: Deploy application
+
+    runs-on: ubuntu-latest
+
+    needs:
+      - build-push
+
+    environment:
+      name: production
+
+    steps:
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" \
+            > ~/.ssh/id_ed25519
+
+          chmod 600 ~/.ssh/id_ed25519
+
+          ssh-keyscan \
+            -H "${{ secrets.DEPLOY_HOST }}" \
+            >> ~/.ssh/known_hosts
+
+      - name: Deploy new container
+        run: |
+          ssh \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            << EOF
+
+          echo "${{ secrets.GHCR_READ_TOKEN }}" \
+            | docker login ghcr.io \
+                -u "${{ secrets.GHCR_USERNAME }}" \
+                --password-stdin
+
+          docker pull \
+            ghcr.io/silver68211/mlops-churn-api:${{ github.sha }}
+
+          docker rm \
+            -f mlops-churn-api \
+            2>/dev/null || true
+
+          docker run \
+            -d \
+            --name mlops-churn-api \
+            --restart unless-stopped \
+            -p 8000:8000 \
+            -e MLFLOW_TRACKING_URI="${{ secrets.MLFLOW_TRACKING_URI }}" \
+            -e MODEL_URI="models:/churn_classifier@candidate" \
+            -e DECISION_THRESHOLD="0.50" \
+            ghcr.io/silver68211/mlops-churn-api:${{ github.sha }}
+
+          sleep 5
+
+          curl \
+            --fail \
+            http://127.0.0.1:8000/health
+
+          EOF
