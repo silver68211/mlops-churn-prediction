@@ -1,8 +1,9 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 
-
+@pytest.mark.integration
 def test_health():
 
     with TestClient(app) as client:
