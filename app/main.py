@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import os
 
 import mlflow
 import mlflow.sklearn
@@ -12,12 +13,30 @@ from pydantic import BaseModel, Field
 # Configuration
 # -------------------------------------------------
 
-MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+# MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 
-MODEL_URI = "models:/churn_classifier@candidate"
+# MODEL_URI = "models:/churn_classifier@candidate"
 
-DECISION_THRESHOLD = 0.50
+# DECISION_THRESHOLD = 0.50
 
+
+
+MLFLOW_TRACKING_URI = os.getenv(
+    "MLFLOW_TRACKING_URI",
+    "http://127.0.0.1:5000"
+)
+
+MODEL_URI = os.getenv(
+    "MODEL_URI",
+    "models:/churn_classifier@candidate"
+)
+
+DECISION_THRESHOLD = float(
+    os.getenv(
+        "DECISION_THRESHOLD",
+        "0.50"
+    )
+)
 
 # -------------------------------------------------
 # Global model variable
