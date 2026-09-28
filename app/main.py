@@ -43,7 +43,7 @@ MLFLOW_TRACKING_URI = os.getenv(
 
 MODEL_URI = os.getenv(
     "MODEL_URI",
-    "models:/churn_classifier@candidate"
+    "models:/churn_classifier@champion"
 )
 
 DECISION_THRESHOLD = float(
