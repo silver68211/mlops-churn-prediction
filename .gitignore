@@ -23,3 +23,4 @@ models/*.joblib
 mlflow.db
 mlartifacts/
 mlruns/
+actions-runner/
